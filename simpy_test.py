@@ -79,9 +79,11 @@ class authenticator(network_module):
         pacemaker.auth_public_key = self.private_key.publickey()
 
     def handle_message(self,message:bytearray):
-        # TODO possibly simulate entire BLE packet
-        data_field = message
-        print(self.parse_message(message))
+        message_dict = self.parse_message(message)
+        if message_dict['type'] == 'error':
+            return
+        elif message_dict['type'] == 'auth_request':
+            self.send(self.create_authentication_response_message(),self.pacemaker_buffer)
 
     def parse_message(self,encrypted_message:bytearray):
         decrypt_cipher = PKCS1_OAEP.new(self.private_key)
@@ -96,6 +98,12 @@ class authenticator(network_module):
         else:
             return {'type':'error'}
 
+    def create_authentication_response_message(self):
+        message_dict = {'type':'auth_response','time':self.env.now}
+        sign_cipher = PKCS1_v1_5.new(self.private_key)
+        encrypt_cipher = PKCS1_OAEP.new(self.pacemaker_public_key)
+        return self.create_encrypted_message(message_dict,sign_cipher,encrypt_cipher)
+
 class pacemaker(network_module):
     def __init__(self,env:simpy.Environment):
         super().__init__(env)
@@ -106,11 +114,13 @@ class pacemaker(network_module):
         self.programmer_public_key = None
 
     def handle_message(self,message:bytearray):
-        message_dict = self.parse_regular_op_message(message)
+        message_dict = self.parse_message(message)
         if message_dict['type'] == 'error':
             return
         elif message_dict['type'] == 'op_request':
             self.send(self.create_auth_request_message(),self.auth_buffer)
+        elif message_dict['type'] == 'auth_response':
+            print(message_dict)
 
     def set_programmer(self,programmer:network_module):
         self.programmer_buffer = programmer.pending_messages
@@ -120,7 +130,7 @@ class pacemaker(network_module):
         self.auth_buffer = authenticator.pending_messages
         authenticator.pacemaker_public_key = self.private_key.publickey()
 
-    def parse_regular_op_message(self,encrypted_message:bytearray):
+    def parse_message(self,encrypted_message:bytearray):
         decrypt_cipher = PKCS1_OAEP.new(self.private_key)
         message_dict = self.decrypt_message(encrypted_message,decrypt_cipher)
         if message_dict['type'] == 'op_request':
@@ -134,6 +144,8 @@ class pacemaker(network_module):
             return message_dict
         else:
             return {'type':'error'}
+
+
 
     def create_auth_request_message(self):
         # challenge = bytearray([random.randint(0,255) for i in range(8)])
