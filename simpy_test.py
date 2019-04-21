@@ -1,4 +1,5 @@
 import random
+import struct
 
 import simpy
 from Crypto.Hash import SHA256
@@ -51,7 +52,7 @@ class network_module(object):
 
     def create_encrypted_message(self,message_dict,sign_cipher,encrypt_cipher):
         hash = SHA256.new()
-        hash.update(bytearray(message_dict['time']))
+        hash.update(bytearray(struct.pack('f',message_dict['time'])))
         message_dict['signature'] = sign_cipher.sign(hash)
         unencrypted_message_bytes = pickle.dumps(message_dict)
         encrypted_message_bytes = self.encrypt_all_bytes(unencrypted_message_bytes,encrypt_cipher)
@@ -63,7 +64,7 @@ class network_module(object):
 
     def verify_signature(self,signature,verify_cipher,target):
         hash = SHA256.new()
-        hash.update(bytearray(target))
+        hash.update(bytearray(struct.pack('f',target)))
         return verify_cipher.verify(hash,signature)
 
 class authenticator(network_module):
@@ -135,9 +136,9 @@ class pacemaker(network_module):
             return {'type':'error'}
 
     def create_auth_request_message(self):
-        challenge = bytearray([random.randint(0,255)]*8)
+        # challenge = bytearray([random.randint(0,255) for i in range(8)])
         time = self.env.now
-        message_dict = {'type':'auth_request','time':time,'challenge':challenge}
+        message_dict = {'type':'auth_request','time':time}
         sign_cipher = PKCS1_v1_5.new(self.private_key)
         encrypt_cipher = PKCS1_OAEP.new(self.auth_public_key)
         return self.create_encrypted_message(message_dict,sign_cipher,encrypt_cipher)
@@ -207,9 +208,11 @@ prg = programmer(env)
 auth = authenticator(env)
 auth.set_pacemaker(pm)
 prg.set_pacemaker(pm)
+pm.set_authenticator(auth)
 pm.set_programmer(prg)
 
 env.process(pm.run())
 env.process(prg.run())
+env.process(auth.run())
 env.run(until=0.5)
 # env.run(until=10)
