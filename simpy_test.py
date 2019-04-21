@@ -1,3 +1,5 @@
+import random
+
 import simpy
 from Crypto.Hash import SHA256
 from Crypto.PublicKey import RSA
@@ -46,34 +48,6 @@ class network_module(object):
             ret += cipher.decrypt(encrypted_bytes[i:i+256])
         return ret
 
-class tic(network_module):
-    def __init__(self,env:simpy.Environment):
-        super().__init__(env)
-        self.toc_buffer = None
-
-    def set_toc(self,toc:network_module):
-        self.toc_buffer = toc.pending_messages
-
-    def on_start(self):
-        self.send(bytearray([1,2,3,4]),self.toc_buffer)
-        print("tic start")
-
-    def handle_message(self,message:bytearray):
-        self.send(message,self.toc_buffer)
-        print(str(message)+" sent to toc")
-
-class toc(network_module):
-    def __init__(self,env:simpy.Environment):
-        super().__init__(env)
-        self.tic_buffer = None
-
-    def set_tic(self,tic:network_module):
-        self.tic_buffer = tic.pending_messages
-
-    def handle_message(self,message:bytearray):
-        self.send(message,self.tic_buffer)
-        print(str(message)+" sent to tic")
-
 class authenticator(network_module):
     def __init__(self,env:simpy.Environment):
         super().__init__(env)
@@ -119,6 +93,12 @@ class pacemaker(network_module):
         else:
             return {'type':'error'}
 
+    def create_auth_request_message(self):
+        challenge = random.getrandbits(128)
+        time = self.env.now
+        message_dict = {'type':'auth_request','time':time,'challenge':challenge}
+
+
 
 class programmer(network_module):
     def __init__(self,env:simpy.Environment,test_mode="Standard OP"):
@@ -160,7 +140,6 @@ class programmer(network_module):
         return encrypted_message_bytes
 
     def handle_message(self,message:bytearray):
-        # TODO implement encryption
         dec_cipher = PKCS1_OAEP.new(self.private_key)
         decrypted_message = dec_cipher.decrypt(message)
         parsed_message = json.loads(str(decrypted_message,encoding='utf-8'))
