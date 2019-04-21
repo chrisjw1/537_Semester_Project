@@ -2,8 +2,9 @@ import simpy
 from Crypto.Hash import SHA256
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
+from Crypto.Signature import PKCS1_v1_5
 import json
-
+import pickle
 
 class network_module(object):
     def __init__(self,env:simpy.Environment):
@@ -32,6 +33,18 @@ class network_module(object):
     def send(self,message:bytearray,recieve_buffer:list):
         # yield self.env.timeout(0.05)
         recieve_buffer.append(message)
+
+    def encrypt_all_bytes(self,unencrypted_bytes,cipher):
+        ret = bytes()
+        for i in range(0,len(unencrypted_bytes),214):
+            ret += cipher.encrypt(unencrypted_bytes[i:i+214])
+        return ret
+
+    def decrypt_all_bytes(self,encrypted_bytes,cipher):
+        ret = bytes()
+        for i in range(0,len(encrypted_bytes),256):
+            ret += cipher.decrypt(encrypted_bytes[i:i+256])
+        return ret
 
 class tic(network_module):
     def __init__(self,env:simpy.Environment):
@@ -83,11 +96,7 @@ class pacemaker(network_module):
         self.programmer_public_key = None
 
     def handle_message(self,message:bytearray):
-        dec_cipher = PKCS1_OAEP.new(self.private_key)
-        decrypted_message = dec_cipher.decrypt(message)
-        parsed_message = json.loads(str(decrypted_message,encoding='utf-8'))
-        print(message)
-        print(parsed_message)
+        print(self.decrypt_message(message))
 
     def set_programmer(self,programmer:network_module):
         self.programmer_buffer = programmer.pending_messages
@@ -95,15 +104,17 @@ class pacemaker(network_module):
 
     def decrypt_message(self,encrypted_message:bytearray):
         decrypt_cipher = PKCS1_OAEP.new(self.private_key)
-        decrypted_message = decrypt_cipher.decrypt(encrypted_message)
-        message_dict = json.loads(str(decrypted_message,'utf-8'))
+        decrypted_message = self.decrypt_all_bytes(encrypted_message,decrypt_cipher)
+        message_dict = pickle.loads(decrypted_message)
         if message_dict['type'] == 'op_request':
-            verify_cipher = PKCS1_OAEP.new(self.programmer_public_key)
+            verify_cipher = PKCS1_v1_5.new(self.programmer_public_key)
         elif message_dict['type'] == 'auth_response':
-            verify_cipher =  PKCS1_OAEP.new(self.auth_public_key)
+            verify_cipher =  PKCS1_v1_5.new(self.auth_public_key)
         else:
             return {'type':'error'}
-        if verify_cipher.verify(message_dict['signature']):
+        hash = SHA256.new()
+        hash.update(bytearray(message_dict['time']))
+        if verify_cipher.verify(hash,message_dict['signature']):
             return message_dict
         else:
             return {'type':'error'}
@@ -129,20 +140,23 @@ class programmer(network_module):
 
     def on_start(self):
         if self.test_mode == "Standard OP":
-            json_message = {'op_name':'STANDARD OP'}
-            to_send = bytearray(json.dumps(json_message),"utf-8")
-            to_send = PKCS1_OAEP.new(self.pacemaker_public_key).encrypt(to_send)
-            self.send(to_send,self.pacemaker_buffer)
+            # json_message = {'op_name':'STANDARD OP'}
+            # to_send = bytearray(json.dumps(json_message),"utf-8")
+            # to_send = PKCS1_OAEP.new(self.pacemaker_public_key).encrypt(to_send)
+            # self.send(to_send,self.pacemaker_buffer)
+            self.send(self.create_op_request_message(),self.pacemaker_buffer)
+            # self.send(self.create_op_request_message(),self.pacemaker_buffer)
 
     def create_op_request_message(self):
         message_dict = {'type':'op_request','time':self.env.now}
-        sign_cipher = PKCS1_OAEP.new(self.private_key)
+        sign_cipher = PKCS1_v1_5.new(self.private_key)
         hash = SHA256.new()
-        hash.update(message_dict['time'])
+        hash.update(bytearray(message_dict['time']))
         message_dict['signature'] = sign_cipher.sign(hash)
-        unencrypted_message_bytes = bytearray(json.dumps(message_dict),'utf-8')
+        unencrypted_message_bytes = pickle.dumps(message_dict)
         encrypt_cipher = PKCS1_OAEP.new(self.pacemaker_public_key)
-        encrypted_message_bytes = encrypt_cipher.encrypt(unencrypted_message_bytes)
+        # encrypted_message_bytes = encrypt_cipher.encrypt(unencrypted_message_bytes)
+        encrypted_message_bytes = self.encrypt_all_bytes(unencrypted_message_bytes,encrypt_cipher)
         return encrypted_message_bytes
 
     def handle_message(self,message:bytearray):
