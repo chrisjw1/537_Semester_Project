@@ -32,7 +32,7 @@ class network_module(object):
     def handle_message(self,message:bytearray):
         pass
 
-    def send(self,message:bytearray,recieve_buffer:list):
+    def send(self,message:bytes,recieve_buffer:list):
         # yield self.env.timeout(0.05)
         recieve_buffer.append(message)
 
@@ -47,6 +47,23 @@ class network_module(object):
         for i in range(0,len(encrypted_bytes),256):
             ret += cipher.decrypt(encrypted_bytes[i:i+256])
         return ret
+
+    def create_encrypted_message(self,message_dict,sign_cipher,encrypt_cipher):
+        hash = SHA256.new()
+        hash.update(bytearray(message_dict['time']))
+        message_dict['signature'] = sign_cipher.sign(hash)
+        unencrypted_message_bytes = pickle.dumps(message_dict)
+        encrypted_message_bytes = self.encrypt_all_bytes(unencrypted_message_bytes,encrypt_cipher)
+        return encrypted_message_bytes
+
+    def decrypt_message(self,encrypted_message_bytes,decrypt_cipher):
+        decrypted_message = self.decrypt_all_bytes(encrypted_message_bytes, decrypt_cipher)
+        return pickle.loads(decrypted_message)
+
+    def verify_signature(self,signature,verify_cipher,target):
+        hash = SHA256.new()
+        hash.update(bytearray(target))
+        return verify_cipher.verify(hash,signature)
 
 class authenticator(network_module):
     def __init__(self,env:simpy.Environment):
@@ -70,25 +87,23 @@ class pacemaker(network_module):
         self.programmer_public_key = None
 
     def handle_message(self,message:bytearray):
-        print(self.decrypt_message(message))
+        print(self.parse_regular_op_message(message))
 
     def set_programmer(self,programmer:network_module):
         self.programmer_buffer = programmer.pending_messages
         programmer.pacemaker_public_key = self.private_key.publickey()
 
-    def decrypt_message(self,encrypted_message:bytearray):
+    def parse_regular_op_message(self,encrypted_message:bytearray):
         decrypt_cipher = PKCS1_OAEP.new(self.private_key)
-        decrypted_message = self.decrypt_all_bytes(encrypted_message,decrypt_cipher)
-        message_dict = pickle.loads(decrypted_message)
+        message_dict = self.decrypt_message(encrypted_message,decrypt_cipher)
         if message_dict['type'] == 'op_request':
             verify_cipher = PKCS1_v1_5.new(self.programmer_public_key)
         elif message_dict['type'] == 'auth_response':
-            verify_cipher =  PKCS1_v1_5.new(self.auth_public_key)
+            verify_cipher = PKCS1_v1_5.new(self.auth_public_key)
         else:
             return {'type':'error'}
-        hash = SHA256.new()
-        hash.update(bytearray(message_dict['time']))
-        if verify_cipher.verify(hash,message_dict['signature']):
+
+        if self.verify_signature(message_dict['signature'],verify_cipher,message_dict['time']):
             return message_dict
         else:
             return {'type':'error'}
@@ -97,6 +112,7 @@ class pacemaker(network_module):
         challenge = random.getrandbits(128)
         time = self.env.now
         message_dict = {'type':'auth_request','time':time,'challenge':challenge}
+
 
 
 
@@ -129,15 +145,7 @@ class programmer(network_module):
 
     def create_op_request_message(self):
         message_dict = {'type':'op_request','time':self.env.now}
-        sign_cipher = PKCS1_v1_5.new(self.private_key)
-        hash = SHA256.new()
-        hash.update(bytearray(message_dict['time']))
-        message_dict['signature'] = sign_cipher.sign(hash)
-        unencrypted_message_bytes = pickle.dumps(message_dict)
-        encrypt_cipher = PKCS1_OAEP.new(self.pacemaker_public_key)
-        # encrypted_message_bytes = encrypt_cipher.encrypt(unencrypted_message_bytes)
-        encrypted_message_bytes = self.encrypt_all_bytes(unencrypted_message_bytes,encrypt_cipher)
-        return encrypted_message_bytes
+        return self.create_encrypted_message(message_dict,PKCS1_v1_5.new(self.private_key),PKCS1_OAEP.new(self.pacemaker_public_key))
 
     def handle_message(self,message:bytearray):
         dec_cipher = PKCS1_OAEP.new(self.private_key)
