@@ -121,6 +121,10 @@ class pacemaker(network_module):
             self.send(self.create_auth_request_message(),self.auth_buffer)
         elif message_dict['type'] == 'auth_response':
             print(message_dict)
+            self.send(self.create_op_response_message(),self.programmer_buffer)
+
+    def set_backend(self,backend):
+        backend.pacemaker_public_key = self.private_key.publickey()
 
     def set_programmer(self,programmer:network_module):
         self.programmer_buffer = programmer.pending_messages
@@ -145,8 +149,6 @@ class pacemaker(network_module):
         else:
             return {'type':'error'}
 
-
-
     def create_auth_request_message(self):
         # challenge = bytearray([random.randint(0,255) for i in range(8)])
         time = self.env.now
@@ -155,7 +157,12 @@ class pacemaker(network_module):
         encrypt_cipher = PKCS1_OAEP.new(self.auth_public_key)
         return self.create_encrypted_message(message_dict,sign_cipher,encrypt_cipher)
 
-
+    def create_op_response_message(self):
+        time = self.env.now
+        message_dict = {'type':'op_response','time':time}
+        sign_cipher = PKCS1_v1_5.new(self.private_key)
+        encrypt_cipher = PKCS1_OAEP.new(self.programmer_public_key)
+        return self.create_encrypted_message(message_dict,sign_cipher,encrypt_cipher)
 
 class programmer(network_module):
     def __init__(self,env:simpy.Environment,test_mode="Standard OP"):
@@ -189,10 +196,25 @@ class programmer(network_module):
         return self.create_encrypted_message(message_dict,PKCS1_v1_5.new(self.private_key),PKCS1_OAEP.new(self.pacemaker_public_key))
 
     def handle_message(self,message:bytearray):
-        # TODO finish this
-        dec_cipher = PKCS1_OAEP.new(self.private_key)
-        decrypted_message = dec_cipher.decrypt(message)
-        parsed_message = json.loads(str(decrypted_message,encoding='utf-8'))
+        decrypt_cipher = PKCS1_OAEP.new(self.private_key)
+        message_dict = self.decrypt_message(message,decrypt_cipher)
+        if message_dict['type'] == 'error':
+            return
+        elif message_dict['type'] == 'op_response':
+            verify_cipher = PKCS1_v1_5.new(self.pacemaker_public_key)
+
+        if self.verify_signature(message_dict['signature'],verify_cipher,message_dict['time']):
+            print(message_dict)
+            if message_dict['type'] == 'op_response':
+                self.send(self.forward_op_response(message_dict), self.backend_buffer)
+
+    def forward_op_response(self,message_dict):
+        encrypt_cipher = PKCS1_OAEP.new(self.backend_public_key)
+        unencrypted_message_bytes = pickle.dumps(message_dict)
+        return self.encrypt_all_bytes(unencrypted_message_bytes,encrypt_cipher)
+
+
+
 
 
 class backend(network_module):
@@ -200,12 +222,25 @@ class backend(network_module):
         super().__init__(env)
         self.programmer_buffer = None
         self.programmer_public_key = None
+        self.pacemaker_public_key = None
         self.private_key = RSA.generate(2048)
 
 
     def set_programmer(self,programmer:programmer):
         self.programmer_buffer = programmer.pending_messages
         programmer.backend_public_key = self.private_key.publickey()
+
+
+    def handle_message(self,message:bytearray):
+        decrypt_cipher = PKCS1_OAEP.new(self.private_key)
+        message_dict = self.decrypt_message(message,decrypt_cipher)
+        if message_dict['type'] == 'error':
+            return
+        elif message_dict['type'] == 'op_response':
+            verify_cipher = PKCS1_v1_5.new(self.pacemaker_public_key)
+
+        if self.verify_signature(message_dict['signature'],verify_cipher,message_dict['time']):
+            print(message_dict)
 
 
 env = simpy.Environment()
@@ -218,13 +253,21 @@ env = simpy.Environment()
 pm = pacemaker(env)
 prg = programmer(env)
 auth = authenticator(env)
+back = backend(env)
+
 auth.set_pacemaker(pm)
 prg.set_pacemaker(pm)
+prg.set_backend(back)
 pm.set_authenticator(auth)
 pm.set_programmer(prg)
+pm.set_backend(back)
+back.set_programmer(prg)
+
 
 env.process(pm.run())
 env.process(prg.run())
 env.process(auth.run())
+env.process(back.run())
+
 env.run(until=0.5)
 # env.run(until=10)
