@@ -184,12 +184,7 @@ class programmer(network_module):
 
     def on_start(self):
         if self.test_mode == "Standard OP":
-            # json_message = {'op_name':'STANDARD OP'}
-            # to_send = bytearray(json.dumps(json_message),"utf-8")
-            # to_send = PKCS1_OAEP.new(self.pacemaker_public_key).encrypt(to_send)
-            # self.send(to_send,self.pacemaker_buffer)
             self.send(self.create_op_request_message(),self.pacemaker_buffer)
-            # self.send(self.create_op_request_message(),self.pacemaker_buffer)
 
     def create_op_request_message(self):
         message_dict = {'type':'op_request','time':self.env.now}
