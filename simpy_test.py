@@ -11,9 +11,10 @@ import pickle
 
 
 class network_module(object):
-    def __init__(self,env:simpy.Environment):
+    def __init__(self,env:simpy.Environment,name="unnamed"):
         self.env = env
         self.pending_messages = []
+        self.name = name
 
     def on_start(self):
         pass
@@ -36,6 +37,7 @@ class network_module(object):
 
     def send(self,message:bytes,recieve_buffer:list):
         # yield self.env.timeout(0.05)
+        print('Time: ',self.env.now,', Name: ',self.name,', Sending Encrypted Message:',message[0:4],'...')
         recieve_buffer.append(message)
 
     def encrypt_all_bytes(self,unencrypted_bytes,cipher):
@@ -69,7 +71,7 @@ class network_module(object):
 
 class authenticator(network_module):
     def __init__(self,env:simpy.Environment):
-        super().__init__(env)
+        super().__init__(env,'authenticator')
         self.pacemaker_buffer = None
         self.pacemaker_public_key = None
         self.private_key = RSA.generate(2048)
@@ -80,6 +82,7 @@ class authenticator(network_module):
 
     def handle_message(self,message:bytearray):
         message_dict = self.parse_message(message)
+        print('Time: ',self.env.now,', Name: ',self.name,', Recieved Message: ',message_dict['type'])
         if message_dict['type'] == 'error':
             return
         elif message_dict['type'] == 'auth_request':
@@ -106,7 +109,7 @@ class authenticator(network_module):
 
 class pacemaker(network_module):
     def __init__(self,env:simpy.Environment):
-        super().__init__(env)
+        super().__init__(env,"pacemaker")
         self.private_key = RSA.generate(2048)
         self.auth_buffer = None
         self.auth_public_key = None
@@ -115,12 +118,12 @@ class pacemaker(network_module):
 
     def handle_message(self,message:bytearray):
         message_dict = self.parse_message(message)
+        print('Time: ',self.env.now,', Name: ',self.name,', Recieved Message: ',message_dict['type'])
         if message_dict['type'] == 'error':
             return
         elif message_dict['type'] == 'op_request':
             self.send(self.create_auth_request_message(),self.auth_buffer)
         elif message_dict['type'] == 'auth_response':
-            print(message_dict)
             self.send(self.create_op_response_message(),self.programmer_buffer)
 
     def set_backend(self,backend):
@@ -166,7 +169,7 @@ class pacemaker(network_module):
 
 class programmer(network_module):
     def __init__(self,env:simpy.Environment,test_mode="Standard OP"):
-        super().__init__(env)
+        super().__init__(env,"programmer")
         self.pacemaker_buffer = None
         self.pacemaker_public_key = None
         self.backend_buffer = None
@@ -193,13 +196,13 @@ class programmer(network_module):
     def handle_message(self,message:bytearray):
         decrypt_cipher = PKCS1_OAEP.new(self.private_key)
         message_dict = self.decrypt_message(message,decrypt_cipher)
+        print('Time: ',self.env.now,', Name: ',self.name,', Recieved Message: ',message_dict['type'])
         if message_dict['type'] == 'error':
             return
         elif message_dict['type'] == 'op_response':
             verify_cipher = PKCS1_v1_5.new(self.pacemaker_public_key)
 
         if self.verify_signature(message_dict['signature'],verify_cipher,message_dict['time']):
-            print(message_dict)
             if message_dict['type'] == 'op_response':
                 self.send(self.forward_op_response(message_dict), self.backend_buffer)
 
@@ -214,7 +217,7 @@ class programmer(network_module):
 
 class backend(network_module):
     def __init__(self,env:simpy.Environment):
-        super().__init__(env)
+        super().__init__(env,"backend")
         self.programmer_buffer = None
         self.programmer_public_key = None
         self.pacemaker_public_key = None
@@ -235,7 +238,7 @@ class backend(network_module):
             verify_cipher = PKCS1_v1_5.new(self.pacemaker_public_key)
 
         if self.verify_signature(message_dict['signature'],verify_cipher,message_dict['time']):
-            print(message_dict)
+            print('Time: ',self.env.now,', Name: ',self.name,', Recieved Message: ',message_dict['type'])
 
 
 env = simpy.Environment()
@@ -258,11 +261,12 @@ pm.set_programmer(prg)
 pm.set_backend(back)
 back.set_programmer(prg)
 
-
+env.process(back.run())
+env.process(auth.run())
 env.process(pm.run())
 env.process(prg.run())
-env.process(auth.run())
-env.process(back.run())
+
+
 
 env.run(until=0.5)
 # env.run(until=10)
